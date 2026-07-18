@@ -23,28 +23,115 @@ jobs:
 
     strategy:
       fail-fast: false
+
       matrix:
         include:
           - image: v2ray
+            upstream: v2fly/v2ray-core
             context: ./docker/v2ray
             dockerfile: ./docker/v2ray/Dockerfile.architecture
+            script: ./docker/v2ray/v2ray.sh
             platforms: linux/386,linux/amd64,linux/arm/v6,linux/arm/v7,linux/arm64
 
           - image: xray
+            upstream: XTLS/Xray-core
             context: ./docker/xray
             dockerfile: ./docker/xray/Dockerfile.architecture
+            script: ./docker/xray/xray.sh
             platforms: linux/386,linux/amd64,linux/arm/v6,linux/arm/v7,linux/arm64,linux/ppc64le,linux/s390x
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
+
+      # 获取上游最新正式 Release 的版本号。
+      # releases/latest 默认指向最新正式版，
+      # 下面仍然再次检查 draft 和 prerelease 字段。
+      - name: Resolve latest stable release
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM: ${{ matrix.upstream }}
+        run: |
+          set -euo pipefail
+
+          release_json="$(
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --location \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              "https://api.github.com/repos/${UPSTREAM}/releases/latest"
+          )"
+
+          version="$(jq -r '.tag_name // empty' <<< "${release_json}")"
+          draft="$(jq -r '.draft // true' <<< "${release_json}")"
+          prerelease="$(jq -r '.prerelease // true' <<< "${release_json}")"
+
+          if [ -z "${version}" ]; then
+            echo "::error::Unable to resolve the latest release for ${UPSTREAM}"
+            exit 1
+          fi
+
+          if [ "${draft}" != "false" ]; then
+            echo "::error::Release ${version} is a draft"
+            exit 1
+          fi
+
+          if [ "${prerelease}" != "false" ]; then
+            echo "::error::Release ${version} is a pre-release"
+            exit 1
+          fi
+
+          echo "Latest stable release: ${version}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
 
       - name: Prepare image name
         id: image
         shell: bash
         run: |
-          echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${{ matrix.image }}" \
-            >> "${GITHUB_OUTPUT}"
+          set -euo pipefail
+
+          image_name="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${{ matrix.image }}"
+
+          echo "Image name: ${image_name}"
+          echo "name=${image_name}" >> "${GITHUB_OUTPUT}"
+
+      # 将脚本中的 releases/latest/download 临时替换为本次查询到的
+      # 具体版本地址，保证镜像版本标签与实际下载的核心版本完全一致。
+      # 这里只修改 Actions Runner 的临时工作目录，不会修改仓库文件。
+      - name: Pin release version
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          SCRIPT: ${{ matrix.script }}
+        run: |
+          set -euo pipefail
+
+          sed -i \
+            "s#/releases/latest/download/#/releases/download/${VERSION}/#g" \
+            "${SCRIPT}"
+
+          echo "Pinned ${SCRIPT} to ${VERSION}"
+
+          grep "/releases/download/${VERSION}/" "${SCRIPT}" > /dev/null || {
+            echo "::error::Failed to pin the release URL in ${SCRIPT}"
+            exit 1
+          }
+
+      - name: Show build information
+        shell: bash
+        run: |
+          echo "Image:     ${{ steps.image.outputs.name }}"
+          echo "Version:   ${{ steps.release.outputs.version }}"
+          echo "Platforms: ${{ matrix.platforms }}"
+          echo
+          echo "Tags:"
+          echo "  ${{ steps.image.outputs.name }}:latest"
+          echo "  ${{ steps.image.outputs.name }}:${{ steps.release.outputs.version }}"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -65,10 +152,11 @@ jobs:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           platforms: ${{ matrix.platforms }}
+
           push: true
           pull: true
 
-          # 防止缓存旧的 latest Release 下载结果
+          # 防止复用旧版本下载层
           no-cache: true
 
           tags: |
@@ -78,6 +166,7 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.title=${{ matrix.image }}
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
             org.opencontainers.image.description=Latest stable ${{ matrix.image }} Docker image
 
           provenance: false
