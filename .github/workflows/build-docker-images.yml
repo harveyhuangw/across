@@ -42,7 +42,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # 获取上游最新正式 Release 的版本号。
       # releases/latest 默认指向最新正式版，
@@ -67,26 +67,38 @@ jobs:
               "https://api.github.com/repos/${UPSTREAM}/releases/latest"
           )"
 
-          version="$(jq -r '.tag_name // empty' <<< "${release_json}")"
+          release_tag="$(jq -r '.tag_name' <<< "${release_json}")"
           draft="$(jq -r '.draft' <<< "${release_json}")"
           prerelease="$(jq -r '.prerelease' <<< "${release_json}")"
 
-          if [ -z "${version}" ]; then
+          if [ -z "${release_tag}" ] || [ "${release_tag}" = "null" ]; then
             echo "::error::Unable to resolve the latest release for ${UPSTREAM}"
             exit 1
           fi
 
           if [ "${draft}" != "false" ]; then
-            echo "::error::Release ${version} is a draft"
+            echo "::error::Release ${release_tag} is a draft"
             exit 1
           fi
 
           if [ "${prerelease}" != "false" ]; then
-            echo "::error::Release ${version} is a pre-release"
+            echo "::error::Release ${release_tag} is a pre-release"
             exit 1
           fi
 
-          echo "Latest stable release: ${version}"
+          # 仅移除开头的一个小写 v。
+          # 例如：v5.51.2 -> 5.51.2
+          version="${release_tag#v}"
+
+          if [ -z "${version}" ]; then
+            echo "::error::Invalid release version: ${release_tag}"
+            exit 1
+          fi
+
+          echo "Upstream release tag: ${release_tag}"
+          echo "Docker image version: ${version}"
+
+          echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
 
       - name: Prepare image name
@@ -106,18 +118,18 @@ jobs:
       - name: Pin release version
         shell: bash
         env:
-          VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
           SCRIPT: ${{ matrix.script }}
         run: |
           set -euo pipefail
 
           sed -i \
-            "s#/releases/latest/download/#/releases/download/${VERSION}/#g" \
+            "s#/releases/latest/download/#/releases/download/${RELEASE_TAG}/#g" \
             "${SCRIPT}"
 
-          echo "Pinned ${SCRIPT} to ${VERSION}"
+          echo "Pinned ${SCRIPT} to ${RELEASE_TAG}"
 
-          grep "/releases/download/${VERSION}/" "${SCRIPT}" > /dev/null || {
+          grep "/releases/download/${RELEASE_TAG}/" "${SCRIPT}" > /dev/null || {
             echo "::error::Failed to pin the release URL in ${SCRIPT}"
             exit 1
           }
@@ -125,9 +137,10 @@ jobs:
       - name: Show build information
         shell: bash
         run: |
-          echo "Image:     ${{ steps.image.outputs.name }}"
-          echo "Version:   ${{ steps.release.outputs.version }}"
-          echo "Platforms: ${{ matrix.platforms }}"
+          echo "Image:       ${{ steps.image.outputs.name }}"
+          echo "Release tag: ${{ steps.release.outputs.release_tag }}"
+          echo "Version:     ${{ steps.release.outputs.version }}"
+          echo "Platforms:   ${{ matrix.platforms }}"
           echo
           echo "Tags:"
           echo "  ${{ steps.image.outputs.name }}:latest"
