@@ -28,10 +28,12 @@ jobs:
           - image: v2ray
             context: ./docker/v2ray
             dockerfile: ./docker/v2ray/Dockerfile.architecture
+            platforms: linux/386,linux/amd64,linux/arm/v6,linux/arm/v7,linux/arm64
 
           - image: xray
             context: ./docker/xray
             dockerfile: ./docker/xray/Dockerfile.architecture
+            platforms: linux/386,linux/amd64,linux/arm/v6,linux/arm/v7,linux/arm64,linux/ppc64le,linux/s390x
 
     steps:
       - name: Checkout repository
@@ -62,16 +64,7 @@ jobs:
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
-
-          platforms: >-
-            linux/386,
-            linux/amd64,
-            linux/arm/v6,
-            linux/arm/v7,
-            linux/arm64,
-            linux/ppc64le,
-            linux/s390x
-
+          platforms: ${{ matrix.platforms }}
           push: true
           pull: true
 
