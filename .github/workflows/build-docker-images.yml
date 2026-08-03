@@ -4,9 +4,9 @@ on:
   # 允许在 Actions 页面手动运行
   workflow_dispatch:
 
-  # 每周五 10:00 UTC 自动运行
+  # 每周五 10:30 UTC 自动运行
   schedule:
-    - cron: "0 10 * * 5"
+    - cron: "30 10 * * 5"
 
 permissions:
   contents: read
