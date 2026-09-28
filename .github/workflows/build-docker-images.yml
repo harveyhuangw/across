@@ -113,7 +113,7 @@ jobs:
           echo "name=${image_name}" >> "${GITHUB_OUTPUT}"
 
       # 将脚本中的 releases/latest/download 临时替换为本次查询到的
-      # 具体版本地址，保证镜像版本标签与实际下载的核心版本完全一致。
+      # 具体版本地址，保证镜像版本标签与实际下载的核心版本一致。
       # 这里只修改 Actions Runner 的临时工作目录，不会修改仓库文件。
       - name: Pin release version
         shell: bash
@@ -160,6 +160,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push ${{ matrix.image }}
+        id: push
         uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
@@ -183,3 +184,135 @@ jobs:
             org.opencontainers.image.description=Latest stable ${{ matrix.image }} Docker image
 
           provenance: false
+
+      # 记录实际推送成功的镜像信息
+      - name: Generate build status
+        shell: bash
+        env:
+          NAME: ${{ matrix.image }}
+          IMAGE: ${{ steps.image.outputs.name }}
+          VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+          PLATFORMS: ${{ matrix.platforms }}
+        run: |
+          set -euo pipefail
+
+          # 验证镜像 Digest
+          if [[ ! "${DIGEST}" =~ ^sha256:[a-fA-F0-9]{64}$ ]]; then
+            echo "::error::Invalid image digest: ${DIGEST}"
+            exit 1
+          fi
+
+          BUILT_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+          # 生成单个镜像的构建记录
+          jq -n \
+            --arg image "${IMAGE}" \
+            --arg version "${VERSION}" \
+            --arg release_tag "${RELEASE_TAG}" \
+            --arg digest "${DIGEST}" \
+            --arg built_at "${BUILT_AT}" \
+            --arg platforms "${PLATFORMS}" \
+            '{
+              image: $image,
+              version: $version,
+              release_tag: $release_tag,
+              digest: $digest,
+              built_at: $built_at,
+              platforms: ($platforms | split(","))
+            }' > "${RUNNER_TEMP}/build-status-${NAME}.json"
+
+          echo "Generated build status:"
+          cat "${RUNNER_TEMP}/build-status-${NAME}.json"
+
+      # 上传临时记录，交给下一个 Job 汇总
+      - name: Upload build status
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-status-${{ matrix.image }}
+          path: ${{ runner.temp }}/build-status-${{ matrix.image }}.json
+          if-no-files-found: error
+          retention-days: 7
+
+  # 两个镜像全部成功后，统一更新仓库构建记录
+  update-status:
+    name: Update Build Status
+    runs-on: ubuntu-latest
+
+    needs: build
+
+    # 仅在默认分支执行仓库写入
+    if: github.ref_name == github.event.repository.default_branch
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Download build status
+        uses: actions/download-artifact@v8
+        with:
+          pattern: build-status-*
+          path: ${{ runner.temp }}/build-status
+          merge-multiple: true
+
+      # 汇总 V2Ray 与 Xray 的构建记录
+      - name: Generate build-status.json
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STATUS_DIR="${RUNNER_TEMP}/build-status"
+
+          # 确认两个构建结果均已获取
+          for image in v2ray xray; do
+            if [ ! -s "${STATUS_DIR}/build-status-${image}.json" ]; then
+              echo "::error::Missing build status for ${image}"
+              exit 1
+            fi
+          done
+
+          mkdir -p docker
+
+          jq -s \
+            --arg updated_at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            '{
+              updated_at: $updated_at,
+              images: (
+                map({
+                  key: (.image | split("/") | last),
+                  value: .
+                }) | from_entries
+              )
+            }' \
+            "${STATUS_DIR}/build-status-v2ray.json" \
+            "${STATUS_DIR}/build-status-xray.json" \
+            > docker/build-status.json
+
+          echo "Combined build status:"
+          cat docker/build-status.json
+
+      # 将构建结果提交到仓库默认分支
+      - name: Commit build status
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add docker/build-status.json
+
+          if git diff --cached --quiet; then
+            echo "No build status changes"
+            exit 0
+          fi
+
+          git commit -m "chore: update Docker build status"
+
+          git push origin "HEAD:refs/heads/${GITHUB_REF_NAME}"
