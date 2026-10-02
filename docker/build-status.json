@@ -1,0 +1,35 @@
+{
+  "updated_at": "2026-10-02T10:38:38Z",
+  "images": {
+    "v2ray": {
+      "image": "ghcr.io/harveyhuangw/v2ray",
+      "version": "5.53.0",
+      "release_tag": "v5.53.0",
+      "digest": "sha256:39c6d5b4801b75d9bf62614a95a395ada3c1d06247599fc5315f19516a0879f1",
+      "built_at": "2026-10-02T10:38:21Z",
+      "platforms": [
+        "linux/386",
+        "linux/amd64",
+        "linux/arm/v6",
+        "linux/arm/v7",
+        "linux/arm64"
+      ]
+    },
+    "xray": {
+      "image": "ghcr.io/harveyhuangw/xray",
+      "version": "26.3.27",
+      "release_tag": "v26.3.27",
+      "digest": "sha256:2822385591d60e3b9ef6197a3dc8392f0c199b862a936d1c194300d71b3da49c",
+      "built_at": "2026-10-02T10:38:12Z",
+      "platforms": [
+        "linux/386",
+        "linux/amd64",
+        "linux/arm/v6",
+        "linux/arm/v7",
+        "linux/arm64",
+        "linux/ppc64le",
+        "linux/s390x"
+      ]
+    }
+  }
+}
